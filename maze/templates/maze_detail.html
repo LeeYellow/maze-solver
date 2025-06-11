@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Let's escape from a maze!</title>
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; background: #f9f9f9; }
+  header { display: flex; justify-content: space-between; align-items: center; background: #333; color: #fff; padding: 1rem; font-size: 1.5rem; position: relative; }
+  .header-buttons { display: flex; gap: 0.5rem; }
+  .header-buttons button { background: #555; color: #fff; border: none; padding: 0.5rem 1rem; cursor: pointer; border-radius: 4px; font-size: 1rem; }
+  .header-buttons button:hover { background: #777; }
+  .container { display: flex; justify-content: center; margin: 2rem 0; }
+  canvas { border: 2px solid #333; }
+  .buttons { display: flex; justify-content: center; margin-top: 1rem; gap: 1rem; }
+  .buttons button { padding: 0.5rem 1rem; font-size: 1rem; cursor: pointer; border: none; border-radius: 4px; background: #333; color: #fff; }
+  .buttons button:hover { background: #555; }
+  .history-menu { position: fixed; top: 0; right: -200px; width: 200px; height: 100%; background: #eee; overflow-y: auto; transition: right 0.3s; box-shadow: -2px 0 5px rgba(0,0,0,0.1); }
+  .history-menu.active { right: 0; }
+  .history-item { padding: 1rem; border-bottom: 1px solid #ccc; cursor: pointer; }
+  .history-item:hover { background: #ddd; }
+  .speed-control { text-align: center; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+
+<header>
+    Let's escape from a maze!
+    <div class="header-buttons">
+        <button onclick="createNewMaze()">Create New Maze</button>
+        <button onclick="toggleHistory()">History</button>
+    </div>
+</header>
+
+<div class="history-menu" id="historyMenu"></div>
+
+<div class="container">
+  <canvas id="mazeCanvas" data-id="{{ maze_id }}"></canvas>
+</div>
+
+<div class="buttons">
+  <button onclick="togglePause()" id="pauseBtn">Pause</button>
+  <button onclick="startMaze()" id="startBtn">Start</button>
+  <button onclick="resetMaze()">Reset</button>
+</div>
+
+<!-- ⭐ 速度控制器 -->
+<div class="speed-control">
+  <label>Speed:</label>
+  <input type="range" id="speedSlider" min="1" max="20" value="1" style="width:150px;">
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+<script>
+const mazeId = {{ maze_id }};
+const maxId = {{ max_id }};
+const showSolution = {{ show_solution|yesno:"true,false" }};
+const canvas = document.getElementById('mazeCanvas');
+const ctx = canvas.getContext('2d');
+let mazeData = null;
+
+let stopAnimation = false;
+let isPaused = false;
+let foundExit = false;
+let animationSpeed = 50;
+let visited, pathStack, branchPath;
+let cell, width, height, grid, solution;
+
+// 速度調節器
+const speedSlider = document.getElementById('speedSlider');
+speedSlider.addEventListener('input', (e)=>{
+  const speed = parseInt(e.target.value);
+  animationSpeed = 50 / speed;
+});
+
+axios.get(`/api/maze/${mazeId}/`).then(res => {
+  mazeData = res.data;
+  width = mazeData.width;
+  height = mazeData.height;
+  grid = mazeData.grid;
+  if (showSolution) {
+    solution = mazeData.solution;
+  } else {
+    solution = null;
+  }
+  cell = 10;
+  canvas.width = width * cell;
+  canvas.height = height * cell;
+  drawMaze(true);
+});
+
+function drawMaze(showFinalResult=false) {
+  for (let y=0; y<height; y++) {
+    for (let x=0; x<width; x++) {
+      ctx.fillStyle = grid[y][x] ? '#000' : '#eee';
+      ctx.fillRect(x*cell, y*cell, cell, cell);
+    }
+  }
+  if (showFinalResult && solution) {
+    solution.forEach(([x,y])=>{
+      ctx.fillStyle = 'blue';
+      ctx.fillRect(x*cell, y*cell, cell, cell);
+    });
+  }
+}
+
+function startMaze() {
+  if (isPaused) {
+    isPaused = false;
+    document.getElementById('pauseBtn').textContent = 'Pause';
+    if (pathStack.length) {
+      const [x, y] = pathStack[pathStack.length - 1];
+      animateDFS(x, y, showSolutionFinal);
+    }
+    return;
+  }
+  stopAnimation = true;
+  drawMaze(false);
+  setTimeout(()=>{
+    stopAnimation = false;
+    foundExit = false;
+    visited = new Set();
+    pathStack = [];
+    animateDFS(1, 1, showSolutionFinal);
+  }, 50);
+}
+
+function animateDFS(x, y, callback) {
+  if (stopAnimation || isPaused || foundExit) return;
+
+  visited.add(`${x},${y}`);
+  pathStack.push([x, y]);
+
+  setTimeout(() => {
+    if (stopAnimation || isPaused || foundExit) return;
+
+    ctx.fillStyle = 'green';
+    ctx.fillRect(x*cell, y*cell, cell, cell);
+
+    setTimeout(() => {
+      if (stopAnimation || isPaused || foundExit) return;
+
+      ctx.fillStyle = 'yellow';
+      ctx.fillRect(x*cell, y*cell, cell, cell);
+
+      if (x === width-2 && y === height-2) {
+        foundExit = true;
+        setTimeout(showSolutionFinal, 1000);
+        return;
+      }
+
+      const neighbors = [];
+      [[-1,0],[1,0],[0,-1],[0,1]].forEach(([dx, dy]) => {
+        const nx = x + dx;
+        const ny = y + dy;
+        if (nx >= 0 && nx < width && ny >= 0 && ny < height &&
+            grid[ny][nx] == 0 && !visited.has(`${nx},${ny}`)) {
+          neighbors.push([nx, ny]);
+        }
+      });
+
+      let i = 0;
+
+      function exploreNextNeighbor() {
+        if (stopAnimation || isPaused || foundExit) return;
+
+        if (i < neighbors.length) {
+          const [nx, ny] = neighbors[i];
+          i++;
+          animateDFS(nx, ny, ()=>{
+            exploreNextNeighbor();
+          });
+        } else {
+          const [backX, backY] = pathStack.pop();
+          ctx.fillStyle = '#eee';
+          ctx.fillRect(backX*cell, backY*cell, cell, cell);
+          ctx.fillStyle = 'red';
+          ctx.fillRect(backX*cell, backY*cell, cell, cell);
+          callback();
+        }
+      }
+
+      exploreNextNeighbor();
+    }, 10);
+  }, animationSpeed);
+}
+
+function showSolutionFinal() {
+  if (!solution) return;
+  solution.forEach(([x, y]) => {
+    ctx.fillStyle = 'blue';
+    ctx.fillRect(x*cell, y*cell, cell, cell);
+  });
+}
+
+function togglePause() {
+  isPaused = !isPaused;
+  const btn = document.getElementById('pauseBtn');
+  btn.textContent = isPaused ? 'Restart' : 'Pause';
+
+  // if paused and resumed, call animateDFS again from the last explored cell."
+  if (!isPaused) {
+    if (pathStack.length) {
+      const [x, y] = pathStack[pathStack.length - 1];
+      animateDFS(x, y, ()=>{
+        setTimeout(()=>{
+          solution.forEach(([x, y])=>{
+            ctx.fillStyle = 'blue';
+            ctx.fillRect(x*cell, y*cell, cell, cell);
+          });
+        }, 1000);
+      });
+    }
+  }
+}
+
+function resetMaze() {
+  stopAnimation = true;
+  setTimeout(()=>{ drawMaze(false); }, 50);
+}
+
+function toggleHistory() {
+  document.getElementById('historyMenu').classList.toggle('active');
+}
+
+document.addEventListener('click', (e)=>{
+  const historyMenu = document.getElementById('historyMenu');
+  if (historyMenu.classList.contains('active') && !e.target.closest('.history-menu') && !e.target.closest('.header-buttons')) {
+    historyMenu.classList.remove('active');
+  }
+});
+
+function createNewMaze() {
+  window.location.href = '/maze/new/';
+}
+
+function generateHistory() {
+  const menu = document.getElementById('historyMenu');
+  menu.innerHTML = '';
+  for (let id=1; id<=maxId; id++) {
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    item.textContent = `Maze #${id}`;
+    item.onclick = () => { window.location.href = `/maze/${id}/`; };
+    menu.appendChild(item);
+  }
+}
+generateHistory();
+</script>
+</body>
+</html>
